@@ -1,0 +1,50 @@
+$PS_EXE = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+# Check whether we're already elevated
+$Admin = $false
+
+try {
+    $Admin = (
+        New-Object Security.Principal.WindowsPrincipal(
+            [Security.Principal.WindowsIdentity]::GetCurrent()
+        )
+    ).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
+}
+catch {
+    $Admin = $false
+}
+
+# ------------------------------------------------------------
+# Elevate
+# ------------------------------------------------------------
+
+if (-not $Admin) {
+
+    $Command = 'Write-Host ""; Write-Host "========================================" -ForegroundColor Cyan; Write-Host " WINDOWS 11 ELEVATED POWERSHELL" -ForegroundColor Cyan; Write-Host "========================================" -ForegroundColor Cyan; Write-Host ""; Write-Host "Computer: $env:COMPUTERNAME"; Write-Host "User: $env:USERNAME"; Write-Host ""; Write-Host "hello world!" -ForegroundColor Green; Write-Host ""; Write-Host "Administrator PowerShell is active." -ForegroundColor Green'
+
+    Start-Process `
+        -FilePath $PS_EXE `
+        -Verb RunAs `
+        -ArgumentList @(
+            '-NoProfile'
+            '-NoExit'
+            '-Command'
+            $Command
+        )
+
+    return
+}
+
+# ------------------------------------------------------------
+# Already elevated
+# ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host " ALREADY ELEVATED" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "hello world!" -ForegroundColor Green
+Write-Host ""
