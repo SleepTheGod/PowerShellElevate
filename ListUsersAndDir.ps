@@ -1,0 +1,240 @@
+#requires -Version 5.1
+
+[CmdletBinding()]
+param(
+    [string]$OutputDirectory = "$env:USERPROFILE\Desktop\SystemInventory",
+    [string[]]$Drives = @("C:")
+)
+
+$ErrorActionPreference = "SilentlyContinue"
+
+New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+
+Write-Host "Windows System Inventory" -ForegroundColor Cyan
+Write-Host "========================" -ForegroundColor Cyan
+
+$OS = Get-CimInstance Win32_OperatingSystem
+
+$SystemInfo = [PSCustomObject]@{
+    ComputerName = $env:COMPUTERNAME
+    UserName     = "$env:USERDOMAIN\$env:USERNAME"
+    OS           = $OS.Caption
+    Version      = $OS.Version
+    Build        = $OS.BuildNumber
+    Architecture = $OS.OSArchitecture
+    PowerShell   = $PSVersionTable.PSVersion.ToString()
+}
+
+$SystemInfo |
+    Export-Csv "$OutputDirectory\system-info.csv" -NoTypeInformation -Encoding UTF8
+
+Write-Host "`n[+] Local Users" -ForegroundColor Green
+
+$Users = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+    Select-Object Name,
+                  FullName,
+                  Description,
+                  Disabled,
+                  Lockout,
+                  PasswordRequired,
+                  PasswordChangeable,
+                  SID
+
+$Users |
+    Format-Table -AutoSize
+
+$Users |
+    Export-Csv "$OutputDirectory\local-users.csv" -NoTypeInformation -Encoding UTF8
+
+Write-Host "`n[+] Local Groups" -ForegroundColor Green
+
+$Groups = Get-CimInstance Win32_Group -Filter "LocalAccount=True" |
+    Select-Object Name,
+                  Description,
+                  SID
+
+$Groups |
+    Format-Table -AutoSize
+
+$Groups |
+    Export-Csv "$OutputDirectory\local-groups.csv" -NoTypeInformation -Encoding UTF8
+
+Write-Host "`n[+] Group Memberships" -ForegroundColor Green
+
+$GroupMembers = @()
+
+foreach ($Group in $Groups) {
+    try {
+        $Members = Get-LocalGroupMember -Group $Group.Name -ErrorAction Stop
+
+        foreach ($Member in $Members) {
+            $GroupMembers += [PSCustomObject]@{
+                Group           = $Group.Name
+                Member          = $Member.Name
+                ObjectClass     = $Member.ObjectClass
+                PrincipalSource = $Member.PrincipalSource
+            }
+        }
+    }
+    catch {
+        $Members = Get-CimInstance Win32_GroupUser |
+            Where-Object {
+                $_.GroupComponent -match [regex]::Escape($Group.Name)
+            }
+
+        foreach ($Member in $Members) {
+            $GroupMembers += [PSCustomObject]@{
+                Group           = $Group.Name
+                Member          = $Member.PartComponent
+                ObjectClass     = "Unknown"
+                PrincipalSource = "CIM"
+            }
+        }
+    }
+}
+
+$GroupMembers |
+    Format-Table -AutoSize
+
+$GroupMembers |
+    Export-Csv "$OutputDirectory\group-membership.csv" -NoTypeInformation -Encoding UTF8
+
+Write-Host "`n[+] User Profiles" -ForegroundColor Green
+
+$Profiles = Get-ChildItem "C:\Users" -Directory -Force |
+    Select-Object Name,
+                  FullName,
+                  Attributes,
+                  CreationTime,
+                  LastWriteTime
+
+$Profiles |
+    Format-Table -AutoSize
+
+$Profiles |
+    Export-Csv "$OutputDirectory\user-profiles.csv" -NoTypeInformation -Encoding UTF8
+
+Write-Host "`n[+] Scanning Directories" -ForegroundColor Green
+
+$Directories = @()
+
+foreach ($Drive in $Drives) {
+
+    if (-not (Test-Path "$Drive\")) {
+        Write-Warning "Drive not found: $Drive"
+        continue
+    }
+
+    Write-Host "Scanning $Drive ..."
+
+    Get-ChildItem -LiteralPath "$Drive\" `
+                  -Directory `
+                  -Force `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue |
+    ForEach-Object {
+
+        $Owner = $null
+
+        try {
+            $ACL = Get-Acl -LiteralPath $_.FullName -ErrorAction Stop
+            $Owner = $ACL.Owner
+        }
+        catch {}
+
+        $Directories += [PSCustomObject]@{
+            Path          = $_.FullName
+            Name          = $_.Name
+            Parent        = $_.Parent.FullName
+            Attributes    = $_.Attributes
+            CreationTime  = $_.CreationTime
+            LastWriteTime = $_.LastWriteTime
+            Owner         = $Owner
+        }
+    }
+}
+
+$Directories |
+    Export-Csv "$OutputDirectory\directories.csv" -NoTypeInformation -Encoding UTF8
+
+Write-Host "Directories found: $($Directories.Count)" -ForegroundColor Cyan
+
+Write-Host "`n[+] Top-Level Directories" -ForegroundColor Green
+
+$TopLevel = foreach ($Drive in $Drives) {
+
+    if (Test-Path "$Drive\") {
+        Get-ChildItem -LiteralPath "$Drive\" `
+                      -Directory `
+                      -Force `
+                      -ErrorAction SilentlyContinue |
+        Select-Object FullName,
+                      Name,
+                      Attributes,
+                      CreationTime,
+                      LastWriteTime
+    }
+}
+
+$TopLevel |
+    Format-Table -AutoSize
+
+$TopLevel |
+    Export-Csv "$OutputDirectory\top-level-directories.csv" `
+        -NoTypeInformation `
+        -Encoding UTF8
+
+Write-Host "`n[+] Directory ACLs" -ForegroundColor Green
+
+$ACLResults = @()
+
+foreach ($Directory in $Directories) {
+
+    try {
+        $ACL = Get-Acl -LiteralPath $Directory.Path -ErrorAction Stop
+
+        foreach ($Access in $ACL.Access) {
+
+            $ACLResults += [PSCustomObject]@{
+                Path              = $Directory.Path
+                Owner             = $ACL.Owner
+                IdentityReference = $Access.IdentityReference
+                FileSystemRights  = $Access.FileSystemRights
+                AccessControlType = $Access.AccessControlType
+                IsInherited        = $Access.IsInherited
+                InheritanceFlags  = $Access.InheritanceFlags
+                PropagationFlags  = $Access.PropagationFlags
+            }
+        }
+    }
+    catch {}
+}
+
+$ACLResults |
+    Export-Csv "$OutputDirectory\directory-permissions.csv" `
+        -NoTypeInformation `
+        -Encoding UTF8
+
+$Summary = [PSCustomObject]@{
+    ComputerName     = $env:COMPUTERNAME
+    CurrentUser      = "$env:USERDOMAIN\$env:USERNAME"
+    LocalUsers       = @($Users).Count
+    LocalGroups      = @($Groups).Count
+    GroupMemberships = @($GroupMembers).Count
+    UserProfiles     = @($Profiles).Count
+    Directories      = @($Directories).Count
+    ACLEntries       = @($ACLResults).Count
+    Generated        = Get-Date
+    OutputDirectory  = $OutputDirectory
+}
+
+$Summary |
+    Format-List
+
+$Summary |
+    Export-Csv "$OutputDirectory\summary.csv" `
+        -NoTypeInformation `
+        -Encoding UTF8
+
+Write-Host "`nInventory complete." -ForegroundColor Green
+Write-Host "Results: $OutputDirectory" -ForegroundColor Cyan
